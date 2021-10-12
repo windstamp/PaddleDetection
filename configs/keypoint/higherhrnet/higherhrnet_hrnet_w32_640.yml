@@ -1,4 +1,5 @@
-use_gpu: true
+use_gpu: false
+use_npu: true
 log_iter: 10
 save_dir: output
 snapshot_epoch: 10
@@ -62,16 +63,16 @@ OptimizerBuilder:
 #####data
 TrainDataset:
   !KeypointBottomUpCocoDataset
-    image_dir: train2017
-    anno_path: annotations/person_keypoints_train2017.json
-    dataset_dir: dataset/coco
+    image_dir: /paddle/datasets/coco/train2017
+    anno_path: /paddle/datasets/coco/annotations/person_keypoints_train2017.json
+    dataset_dir: /paddle/datasets/coco
     num_joints: *num_joints
 
 EvalDataset:
   !KeypointBottomUpCocoDataset
-    image_dir: val2017
-    anno_path: annotations/person_keypoints_val2017.json
-    dataset_dir: dataset/coco
+    image_dir: /paddle/datasets/coco/val2017
+    anno_path: /paddle/datasets/coco/annotations/person_keypoints_val2017.json
+    dataset_dir: /paddle/datasets/coco/
     num_joints: *num_joints
     test_mode: true
 
@@ -104,7 +105,7 @@ TrainReader:
     - NormalizePermute:
         mean: *global_mean
         std: *global_std
-  batch_size: 20
+  batch_size: 8
   shuffle: true
   drop_last: true
   use_shared_memory: true
