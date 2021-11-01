@@ -1,4 +1,5 @@
-use_gpu: true
+use_gpu: false
+use_npu: true
 log_iter: 20
 save_dir: output
 snapshot_epoch: 1
