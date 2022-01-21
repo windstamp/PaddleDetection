@@ -313,7 +313,7 @@ class Trainer(object):
         # initial fp16
         if self.cfg.get('fp16', False):
             scaler = amp.GradScaler(
-                enable=self.cfg.use_gpu, init_loss_scaling=1024)
+                enable=(self.cfg.use_gpu or self.cfg.use_npu), init_loss_scaling=1024)
 
         self.status.update({
             'epoch_id': self.start_epoch,
@@ -343,7 +343,7 @@ class Trainer(object):
                 self._compose_callback.on_step_begin(self.status)
 
                 if self.cfg.get('fp16', False):
-                    with amp.auto_cast(enable=self.cfg.use_gpu):
+                    with amp.auto_cast(enable=(self.cfg.use_gpu or self.cfg.use_npu)):
                         # model forward
                         outputs = model(data)
                         loss = outputs['loss']
