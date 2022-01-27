@@ -30,6 +30,7 @@ from paddle.distributed import fleet
 from paddle import amp
 from paddle.static import InputSpec
 from ppdet.optimizer import ModelEMA
+import paddle.fluid.profiler as pd_profiler
 
 from ppdet.core.workspace import create
 from ppdet.utils.checkpoint import load_weight, load_pretrain_weight
@@ -330,6 +331,7 @@ class Trainer(object):
         if self.cfg.get('print_flops', False):
             self._flops(self.loader)
 
+        global_step = 0
         for epoch_id in range(self.start_epoch, self.cfg.epoch):
             self.status['mode'] = 'train'
             self.status['epoch_id'] = epoch_id
@@ -338,42 +340,51 @@ class Trainer(object):
             model.train()
             iter_tic = time.time()
             for step_id, data in enumerate(self.loader):
-                self.status['data_time'].update(time.time() - iter_tic)
-                self.status['step_id'] = step_id
-                self._compose_callback.on_step_begin(self.status)
+                global_step = global_step + 1
 
-                if self.cfg.get('fp16', False):
-                    with amp.auto_cast(enable=(self.cfg.use_gpu or self.cfg.use_npu)):
+                if global_step >= 50 and global_step < 60:
+                    output_file = os.getcwd() + '/' + 'npu_prof' + '/samples'
+                else:
+                    output_file = os.getcwd() + '/' + 'npu_prof' + '/ignore'
+                os.makedirs(output_file, exist_ok=True)
+
+                with pd_profiler.npu_profiler(output_file) as npu_prof:
+                    self.status['data_time'].update(time.time() - iter_tic)
+                    self.status['step_id'] = step_id
+                    self._compose_callback.on_step_begin(self.status)
+
+                    if self.cfg.get('fp16', False):
+                        with amp.auto_cast(enable=(self.cfg.use_gpu or self.cfg.use_npu)):
+                            # model forward
+                            outputs = model(data)
+                            loss = outputs['loss']
+
+                        # model backward
+                        scaled_loss = scaler.scale(loss)
+                        scaled_loss.backward()
+                        # in dygraph mode, optimizer.minimize is equal to optimizer.step
+                        scaler.minimize(self.optimizer, scaled_loss)
+                    else:
                         # model forward
                         outputs = model(data)
                         loss = outputs['loss']
+                        # model backward
+                        loss.backward()
+                        self.optimizer.step()
 
-                    # model backward
-                    scaled_loss = scaler.scale(loss)
-                    scaled_loss.backward()
-                    # in dygraph mode, optimizer.minimize is equal to optimizer.step
-                    scaler.minimize(self.optimizer, scaled_loss)
-                else:
-                    # model forward
-                    outputs = model(data)
-                    loss = outputs['loss']
-                    # model backward
-                    loss.backward()
-                    self.optimizer.step()
+                    curr_lr = self.optimizer.get_lr()
+                    self.lr.step()
+                    self.optimizer.clear_grad()
+                    self.status['learning_rate'] = curr_lr
 
-                curr_lr = self.optimizer.get_lr()
-                self.lr.step()
-                self.optimizer.clear_grad()
-                self.status['learning_rate'] = curr_lr
+                    if self._nranks < 2 or self._local_rank == 0:
+                        self.status['training_staus'].update(outputs)
 
-                if self._nranks < 2 or self._local_rank == 0:
-                    self.status['training_staus'].update(outputs)
-
-                self.status['batch_time'].update(time.time() - iter_tic)
-                self._compose_callback.on_step_end(self.status)
-                if self.use_ema:
-                    self.ema.update(self.model)
-                iter_tic = time.time()
+                    self.status['batch_time'].update(time.time() - iter_tic)
+                    self._compose_callback.on_step_end(self.status)
+                    if self.use_ema:
+                        self.ema.update(self.model)
+                    iter_tic = time.time()
 
             # apply ema weight on model
             if self.use_ema:
@@ -411,25 +422,42 @@ class Trainer(object):
                 self.model.set_dict(weight)
 
     def _eval_with_loader(self, loader):
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!! _eval_with_loader 1')
+        
         sample_num = 0
         tic = time.time()
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!! _eval_with_loader 2')
         self._compose_callback.on_epoch_begin(self.status)
         self.status['mode'] = 'eval'
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!! _eval_with_loader 3')
         self.model.eval()
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!! _eval_with_loader 4')
         if self.cfg.get('print_flops', False):
             self._flops(loader)
+
+        global_step = 0
         for step_id, data in enumerate(loader):
-            self.status['step_id'] = step_id
-            self._compose_callback.on_step_begin(self.status)
-            # forward
-            outs = self.model(data)
+            global_step = global_step + 1
+            print(f'!!!!!!!!!!!!!!!!!!!!!!!!! global_step: {global_step}')
 
-            # update metrics
-            for metric in self._metrics:
-                metric.update(data, outs)
+            if global_step >= 10 and global_step < 20:
+                output_file = os.getcwd() + '/' + 'npu_prof' + '/samples'
+            else:
+                output_file = os.getcwd() + '/' + 'npu_prof' + '/ignore'
+            os.makedirs(output_file, exist_ok=True)
 
-            sample_num += data['im_id'].numpy().shape[0]
-            self._compose_callback.on_step_end(self.status)
+            with pd_profiler.npu_profiler(output_file) as npu_prof:
+                self.status['step_id'] = step_id
+                self._compose_callback.on_step_begin(self.status)
+                # forward
+                outs = self.model(data)
+
+                # update metrics
+                for metric in self._metrics:
+                    metric.update(data, outs)
+
+                sample_num += data['im_id'].numpy().shape[0]
+                self._compose_callback.on_step_end(self.status)
 
         self.status['sample_num'] = sample_num
         self.status['cost_time'] = time.time() - tic

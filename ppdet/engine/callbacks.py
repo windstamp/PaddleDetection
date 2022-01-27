@@ -22,6 +22,7 @@ import datetime
 import six
 
 import paddle.distributed as dist
+import paddle.fluid.profiler as pd_profiler
 
 from ppdet.utils.checkpoint import save_model
 
@@ -193,10 +194,25 @@ class WiferFaceEval(Callback):
         super(WiferFaceEval, self).__init__(model)
 
     def on_epoch_begin(self, status):
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!! on_epoch_begin 1')
         assert self.model.mode == 'eval', \
             "WiferFaceEval can only be set during evaluation"
+        global_step = 0
         for metric in self.model._metrics:
-            metric.update(self.model.model)
+            print(f'!!!!!!!!!!!!!!!!!!!!!!!!! len(self.model._metrics): {len(self.model._metrics)}')
+            print(f'!!!!!!!!!!!!!!!!!!!!!!!!! on_epoch_begin 2')
+            global_step = global_step + 1
+            print(f'!!!!!!!!!!!!!!!!!!!!!!!!! global_step: {global_step}')
+
+            if global_step >= 10 and global_step < 20:
+                output_file = os.getcwd() + '/' + 'npu_prof' + '/samples'
+            else:
+                output_file = os.getcwd() + '/' + 'npu_prof' + '/ignore'
+            os.makedirs(output_file, exist_ok=True)
+
+            with pd_profiler.npu_profiler(output_file) as npu_prof:
+                metric.update(self.model.model)
+            print(f'!!!!!!!!!!!!!!!!!!!!!!!!! on_epoch_begin 3')
         sys.exit()
 
 
