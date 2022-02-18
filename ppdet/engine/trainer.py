@@ -343,7 +343,9 @@ class Trainer(object):
                 self._compose_callback.on_step_begin(self.status)
 
                 if self.cfg.get('fp16', False):
-                    with amp.auto_cast(enable=(self.cfg.use_gpu or self.cfg.use_npu)):
+                    with amp.auto_cast(enable=(self.cfg.use_gpu or self.cfg.use_npu),
+                                       custom_black_list={
+                                        "batch_norm", "elementwise_add", "nearest_interp_v2"}):
                         # model forward
                         outputs = model(data)
                         loss = outputs['loss']
