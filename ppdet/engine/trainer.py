@@ -33,6 +33,8 @@ from paddle import amp
 from paddle.static import InputSpec
 from ppdet.optimizer import ModelEMA
 
+import paddle.fluid.profiler as pd_profiler
+
 from ppdet.core.workspace import create
 from ppdet.utils.checkpoint import load_weight, load_pretrain_weight
 from ppdet.utils.visualizer import visualize_results, save_result
@@ -395,6 +397,7 @@ class Trainer(object):
 
         self._compose_callback.on_train_begin(self.status)
 
+        global_step = 0
         for epoch_id in range(self.start_epoch, self.cfg.epoch):
             self.status['mode'] = 'train'
             self.status['epoch_id'] = epoch_id
@@ -403,45 +406,54 @@ class Trainer(object):
             model.train()
             iter_tic = time.time()
             for step_id, data in enumerate(self.loader):
-                self.status['data_time'].update(time.time() - iter_tic)
-                self.status['step_id'] = step_id
-                profiler.add_profiler_step(profiler_options)
-                self._compose_callback.on_step_begin(self.status)
-                data['epoch_id'] = epoch_id
+                global_step = global_step + 1
+                
+                if global_step >= 50 and global_step < 60:
+                    output_file = os.getcwd() + '/' + 'npu_prof' + '/samples'
+                else:
+                    output_file = os.getcwd() + '/' + 'npu_prof' + '/ignore'
+                os.makedirs(output_file, exist_ok=True)
 
-                if self.cfg.get('amp', False):
-                    with amp.auto_cast(enable=self.cfg.use_gpu):
+                with pd_profiler.npu_profiler(output_file) as npu_prof:
+                    self.status['data_time'].update(time.time() - iter_tic)
+                    self.status['step_id'] = step_id
+                    profiler.add_profiler_step(profiler_options)
+                    self._compose_callback.on_step_begin(self.status)
+                    data['epoch_id'] = epoch_id
+
+                    if self.cfg.get('amp', False):
+                        with amp.auto_cast(enable=self.cfg.use_gpu):
+                            # model forward
+                            outputs = model(data)
+                            loss = outputs['loss']
+
+                        # model backward
+                        scaled_loss = scaler.scale(loss)
+                        scaled_loss.backward()
+                        # in dygraph mode, optimizer.minimize is equal to optimizer.step
+                        scaler.minimize(self.optimizer, scaled_loss)
+                    else:
                         # model forward
                         outputs = model(data)
                         loss = outputs['loss']
+                        # model backward
+                        loss.backward()
+                        self.optimizer.step()
+                    curr_lr = self.optimizer.get_lr()
+                    self.lr.step()
+                    if self.cfg.get('unstructured_prune'):
+                        self.pruner.step()
+                    self.optimizer.clear_grad()
+                    self.status['learning_rate'] = curr_lr
 
-                    # model backward
-                    scaled_loss = scaler.scale(loss)
-                    scaled_loss.backward()
-                    # in dygraph mode, optimizer.minimize is equal to optimizer.step
-                    scaler.minimize(self.optimizer, scaled_loss)
-                else:
-                    # model forward
-                    outputs = model(data)
-                    loss = outputs['loss']
-                    # model backward
-                    loss.backward()
-                    self.optimizer.step()
-                curr_lr = self.optimizer.get_lr()
-                self.lr.step()
-                if self.cfg.get('unstructured_prune'):
-                    self.pruner.step()
-                self.optimizer.clear_grad()
-                self.status['learning_rate'] = curr_lr
+                    if self._nranks < 2 or self._local_rank == 0:
+                        self.status['training_staus'].update(outputs)
 
-                if self._nranks < 2 or self._local_rank == 0:
-                    self.status['training_staus'].update(outputs)
-
-                self.status['batch_time'].update(time.time() - iter_tic)
-                self._compose_callback.on_step_end(self.status)
-                if self.use_ema:
-                    self.ema.update()
-                iter_tic = time.time()
+                    self.status['batch_time'].update(time.time() - iter_tic)
+                    self._compose_callback.on_step_end(self.status)
+                    if self.use_ema:
+                        self.ema.update()
+                    iter_tic = time.time()
 
             if self.cfg.get('unstructured_prune'):
                 self.pruner.update_params()
