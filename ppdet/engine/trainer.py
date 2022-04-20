@@ -313,7 +313,7 @@ class Trainer(object):
         # initial fp16
         if self.cfg.get('fp16', False):
             scaler = amp.GradScaler(
-                enable=(self.cfg.use_gpu or self.cfg.use_npu), init_loss_scaling=1024)
+                enable=(self.cfg.use_gpu or self.cfg.use_npu), init_loss_scaling=1024, use_dynamic_loss_scaling=False)
 
         self.status.update({
             'epoch_id': self.start_epoch,
